@@ -5,7 +5,7 @@
  * Centralizes all backend REST communication with standard error handling.
  */
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://student-learning-analytics-api.onrender.com";
 const CACHE_TTL_MS = 60000; // 60-second in-memory client cache
 
 const responseCache = new Map();
