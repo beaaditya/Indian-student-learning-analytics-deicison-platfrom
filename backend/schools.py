@@ -8,6 +8,7 @@ safe pagination, institutional rankings, and granular diagnostic school profiles
 import logging
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all, fetch_one
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.schools")
 
@@ -29,6 +30,24 @@ def get_schools(
     Returns school performance scorecards with demographic filtering, search, and pagination.
     Supports both limit/offset and page/page_size pagination models.
     """
+    cache_key = make_cache_key(
+        "schools",
+        state=state,
+        district=district,
+        school_type=school_type,
+        management_type=management_type,
+        board=board,
+        urban_rural=urban_rural,
+        search=search,
+        limit=limit,
+        offset=offset,
+        page=page,
+        page_size=page_size
+    )
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
+
     # --------------------------------------------------------------------------
     # 1. Normalize Pagination Parameters
     # --------------------------------------------------------------------------
@@ -119,7 +138,7 @@ def get_schools(
     query_params = list(params) + [limit, offset]
     schools = fetch_all(data_sql, tuple(query_params), max_limit=limit + 10)
 
-    return {
+    result = {
         "status": "success",
         "total_count": total_count,
         "page": current_page,
@@ -129,6 +148,8 @@ def get_schools(
         "offset": offset,
         "schools": schools
     }
+    set_cached(cache_key, result)
+    return result
 
 
 def get_school_details(school_id: str) -> Dict[str, Any]:
@@ -141,6 +162,10 @@ def get_school_details(school_id: str) -> Dict[str, Any]:
         return {"status": "not_found", "message": "School ID cannot be empty."}
 
     clean_id = school_id.strip()
+    cache_key = make_cache_key("school_detail", school_id=clean_id)
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
 
     # --------------------------------------------------------------------------
     # 1. School Metadata & Overall Scorecard
@@ -248,7 +273,7 @@ def get_school_details(school_id: str) -> Dict[str, Any]:
     """
     risk_summary = fetch_all(risk_sql, (clean_id,))
 
-    return {
+    result = {
         "status": "success",
         "school": school,
         "grade_breakdown": grade_breakdown,
@@ -256,3 +281,5 @@ def get_school_details(school_id: str) -> Dict[str, Any]:
         "monthly_trend": monthly_trend,
         "risk_summary": risk_summary
     }
+    set_cached(cache_key, result)
+    return result

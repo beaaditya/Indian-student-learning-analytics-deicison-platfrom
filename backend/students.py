@@ -9,6 +9,7 @@ and early-warning risk intervention profiles.
 import logging
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all, fetch_one
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.students")
 
@@ -33,6 +34,23 @@ def get_students(
     # --------------------------------------------------------------------------
     # 1. Normalize Pagination Parameters
     # --------------------------------------------------------------------------
+    cache_key = make_cache_key(
+        "students",
+        school_id=school_id,
+        grade=grade,
+        gender=gender,
+        socioeconomic_band=socioeconomic_band,
+        benchmark_status=benchmark_status,
+        risk_status=risk_status,
+        search=search,
+        limit=limit,
+        offset=offset,
+        page=page,
+        page_size=page_size
+    )
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
     if page is not None and page > 0:
         effective_page_size = page_size if (page_size is not None and page_size > 0) else (limit if limit > 0 else 50)
         limit = effective_page_size
@@ -148,7 +166,7 @@ def get_students(
     query_params = list(params) + [limit, offset]
     students = fetch_all(data_sql, tuple(query_params), max_limit=limit + 10)
 
-    return {
+    result = {
         "status": "success",
         "total_count": total_count,
         "page": current_page,
@@ -158,6 +176,8 @@ def get_students(
         "offset": offset,
         "students": students
     }
+    set_cached(cache_key, result)
+    return result
 
 
 def get_student_profile(student_id: str) -> Dict[str, Any]:
@@ -170,6 +190,10 @@ def get_student_profile(student_id: str) -> Dict[str, Any]:
         return {"status": "not_found", "message": "Student ID cannot be empty."}
 
     clean_id = student_id.strip()
+    cache_key = make_cache_key("student_profile", student_id=clean_id)
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
 
     # --------------------------------------------------------------------------
     # 1. Core Profile & Performance Diagnostics from View
@@ -280,10 +304,12 @@ def get_student_profile(student_id: str) -> Dict[str, Any]:
     """
     interventions = fetch_all(intervention_sql, (clean_id,), max_limit=50)
 
-    return {
+    result = {
         "status": "success",
         "profile": profile,
         "assessment_history": history,
         "engagement_timeline": engagement,
         "interventions": interventions
     }
+    set_cached(cache_key, result)
+    return result

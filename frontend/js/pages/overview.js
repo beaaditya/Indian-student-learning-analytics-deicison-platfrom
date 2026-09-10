@@ -9,6 +9,7 @@ import { api } from "../api.js";
 import { formatNumber, formatScore, formatPercent } from "../utils/formatters.js";
 import { createTrendChartSVG, createBandDistributionHTML } from "../components/charts.js";
 import { renderErrorState } from "../components/error-state.js";
+import { dismissPreloader, showPreloaderError, isPreloaderActive } from "../components/preloader.js";
 
 // Page-level filters state
 let activeFilters = {
@@ -40,13 +41,24 @@ export async function renderOverviewPage(container) {
 
     // 3. Render real dashboard
     renderOverviewDashboard(container, data);
+
+    // 4. Data-driven dismissal: dismiss full-screen preloader immediately after first successful render
+    dismissPreloader();
   } catch (err) {
     console.error("[Executive Overview Error]", err);
-    renderErrorState(container, {
-      title: "Unable to load Executive Overview",
-      message: err.message || "Failed to connect to the PostgreSQL analytics engine. Please verify the backend.",
-      onRetry: () => renderOverviewPage(container),
-    });
+    if (isPreloaderActive()) {
+      showPreloaderError({
+        title: "Unable to load live analytics",
+        message: err.message || "Failed to connect to the PostgreSQL analytics engine. Please check the connection and try again.",
+        onRetry: () => renderOverviewPage(container),
+      });
+    } else {
+      renderErrorState(container, {
+        title: "Unable to load Executive Overview",
+        message: err.message || "Failed to connect to the PostgreSQL analytics engine. Please verify the backend.",
+        onRetry: () => renderOverviewPage(container),
+      });
+    }
   }
 }
 

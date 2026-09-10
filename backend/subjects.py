@@ -4,10 +4,12 @@ Student Learning Analytics & Decision Intelligence Platform
 
 Evaluates competency-level mastery, sub-skill diagnostic heatmaps,
 learning deficit detection, and benchmark achievement across academic subjects.
+Optimized for high performance with smart join elimination and in-memory TTL caching.
 """
 import logging
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.subjects")
 
@@ -21,6 +23,19 @@ def get_subjects_overview(
     """
     Returns subject performance metrics, sub-skill diagnostics, and deficit areas.
     """
+    cache_key = make_cache_key(
+        "subjects",
+        grade=grade,
+        school_id=school_id,
+        state=state,
+        district=district
+    )
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
+
+    has_school_filter = bool(state or district)
+
     where_clauses: List[str] = ["1=1"]
     params: List[Any] = []
 
@@ -38,6 +53,11 @@ def get_subjects_overview(
         params.append(district.strip())
 
     where_sql = " AND ".join(where_clauses)
+    from_sql = (
+        "analytics.fact_performance p JOIN analytics.dim_school s ON p.school_id = s.school_id"
+        if has_school_filter
+        else "analytics.fact_performance p"
+    )
 
     subject_sql = f"""
         SELECT
@@ -56,13 +76,12 @@ def get_subjects_overview(
             ROUND(100.0 * COUNT(*) FILTER (WHERE LOWER(p.benchmark_status) IN ('meets benchmark', 'exceeds benchmark', 'met', 'exceeded')) / NULLIF(COUNT(*), 0), 2) AS benchmark_percentage,
             ROUND(100.0 * COUNT(*) FILTER (WHERE LOWER(p.benchmark_status) IN ('below benchmark', 'needs attention')) / NULLIF(COUNT(*), 0), 2) AS below_benchmark_percentage,
             ROUND(AVG(p.improvement_pct), 2) AS average_improvement_pct
-        FROM analytics.fact_performance p
-        JOIN analytics.dim_school s ON p.school_id = s.school_id
+        FROM {from_sql}
         WHERE {where_sql}
         GROUP BY p.subject
         ORDER BY average_performance DESC;
     """
-    subjects_data = fetch_all(subject_sql, tuple(params), max_limit=10)
+    subjects_data = fetch_all(subject_sql, tuple(params), True, max_limit=10)
 
     # Determine sub-skill gap per subject
     skill_diagnostics: List[Dict[str, Any]] = []
@@ -84,8 +103,10 @@ def get_subjects_overview(
             "strongest_competency": {"skill": strongest_skill[0], "score": strongest_skill[1]}
         })
 
-    return {
+    result = {
         "status": "success",
         "subjects": subjects_data,
         "skill_diagnostics": skill_diagnostics
     }
+    set_cached(cache_key, result)
+    return result

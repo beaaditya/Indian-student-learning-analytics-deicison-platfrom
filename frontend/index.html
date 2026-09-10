@@ -14,8 +14,98 @@
 
   <!-- Core Stylesheet (imports tokens.css & components.css) -->
   <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/preloader.css">
 </head>
 <body>
+  <!-- Full-Screen Enterprise Preloader (Immediate Render) -->
+  <div id="app-preloader" class="app-preloader" role="status" aria-live="polite" aria-label="Preparing Learning Intelligence">
+    <div class="preloader-card">
+      
+      <!-- Brand Header -->
+      <div class="preloader-brand-wrap">
+        <div class="preloader-brand-icon">SLA</div>
+        <div class="preloader-brand-info">
+          <span class="preloader-brand-title">LearnIQ</span>
+          <span class="preloader-brand-subtitle">Decision Intelligence</span>
+        </div>
+      </div>
+
+      <!-- Normal Loading View -->
+      <div id="preloader-loading-view">
+        <!-- Animated Telemetry Graphic -->
+        <div class="preloader-graphic-wrap">
+          <div class="preloader-pulse-ring"></div>
+          <div class="preloader-pulse-ring"></div>
+          <div class="preloader-graphic-core">
+            <svg class="preloader-nodes-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 2v3m0 14v3M2 12h3m14 0h3m-3.5-6.5-2.1 2.1m-8.8 8.8-2.1 2.1m0-13 2.1 2.1m8.8 8.8 2.1 2.1"></path>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Status Headers -->
+        <h2 class="preloader-status-title">Preparing Learning Intelligence</h2>
+        <p class="preloader-status-subtext">Loading live analytics from the data platform…</p>
+
+        <!-- Indeterminate Progress Track -->
+        <div class="preloader-progress-track">
+          <div class="preloader-progress-bar"></div>
+        </div>
+
+        <!-- Rotating Activity Badge -->
+        <div class="preloader-activity-box">
+          <span class="preloader-activity-dot"></span>
+          <span id="preloader-activity-text" class="preloader-activity-text">Connecting to analytics platform…</span>
+        </div>
+
+        <!-- Telemetry Step Indicators -->
+        <div class="preloader-steps-row">
+          <div class="preloader-step-item active" data-step="connecting">
+            <span class="preloader-step-dot"></span>
+            <span>Connecting</span>
+          </div>
+          <div class="preloader-step-item" data-step="processing">
+            <span class="preloader-step-dot"></span>
+            <span>Processing</span>
+          </div>
+          <div class="preloader-step-item" data-step="preparing">
+            <span class="preloader-step-dot"></span>
+            <span>Preparing</span>
+          </div>
+        </div>
+
+        <!-- Slow Connection Reassurance Notice (Appears after 7.5s if cold database load takes time) -->
+        <div id="preloader-slow-notice" class="preloader-slow-notice">
+          Live analytics are taking a little longer to initialize from the database…
+        </div>
+      </div>
+
+      <!-- Error State View (Shown only if API fails) -->
+      <div id="preloader-error-view" class="preloader-error-view">
+        <div class="preloader-error-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+        </div>
+        <h3 id="preloader-error-title" class="preloader-error-title">Unable to load live analytics</h3>
+        <p id="preloader-error-desc" class="preloader-error-desc">Please check the connection and try again.</p>
+        <button id="preloader-retry-btn" class="preloader-retry-btn" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+            <path d="M3 3v5h5"></path>
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path>
+            <path d="M16 16h5v5"></path>
+          </svg>
+          Retry
+        </button>
+      </div>
+
+    </div>
+  </div>
+
   <div id="app">
     <!-- Mobile Backdrop Overlay -->
     <div id="sidebar-overlay" class="sidebar-overlay" aria-hidden="true"></div>

@@ -4,10 +4,13 @@ Student Learning Analytics & Decision Intelligence Platform
 
 Provides executive-level learning KPIs, longitudinal assessment trends,
 performance band distributions, and institutional rankings with safe parameterized slicing.
+Optimized for high-throughput concurrency and in-memory TTL caching.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all, fetch_one
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.overview")
 
@@ -23,11 +26,29 @@ def get_executive_overview(
     Computes high-level executive analytics summary, trends, distributions, and rankings.
     Supports optional slicing by geography, school management type, academic year, and grade.
     All filters are parameterized safely.
+    Uses in-memory TTL caching and concurrent query execution for low latency.
     """
+    cache_key = make_cache_key(
+        "overview",
+        state=state,
+        district=district,
+        management_type=management_type,
+        academic_year=academic_year,
+        grade=grade
+    )
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
+
     # --------------------------------------------------------------------------
     # 1. Build Filter Conditions & Parameter Tuples
     # --------------------------------------------------------------------------
-    perf_joins: List[str] = ["analytics.fact_performance p", "JOIN analytics.dim_school s ON p.school_id = s.school_id"]
+    has_school_filter = bool(state or district or management_type)
+
+    perf_joins: List[str] = ["analytics.fact_performance p"]
+    if has_school_filter:
+        perf_joins.append("JOIN analytics.dim_school s ON p.school_id = s.school_id")
+
     perf_where: List[str] = ["1=1"]
     perf_params: List[Any] = []
 
@@ -69,7 +90,10 @@ def get_executive_overview(
     sch_where_sql = " AND ".join(sch_where)
 
     # Filter for intervention fact
-    risk_joins: List[str] = ["analytics.fact_intervention i", "JOIN analytics.dim_school s ON i.school_id = s.school_id"]
+    risk_joins: List[str] = ["analytics.fact_intervention i"]
+    if has_school_filter:
+        risk_joins.append("JOIN analytics.dim_school s ON i.school_id = s.school_id")
+
     risk_where: List[str] = ["1=1"]
     risk_params: List[Any] = []
 
@@ -95,19 +119,14 @@ def get_executive_overview(
     risk_where_sql = " AND ".join(risk_where)
 
     # --------------------------------------------------------------------------
-    # 2. Total Schools Count
+    # 2. Define Queries for Concurrent Execution
     # --------------------------------------------------------------------------
     total_schools_sql = f"""
         SELECT COUNT(DISTINCT s.school_id) AS total_schools
         FROM analytics.dim_school s
         WHERE {sch_where_sql};
     """
-    total_schools_res = fetch_one(total_schools_sql, tuple(sch_params))
-    total_schools_cnt = total_schools_res["total_schools"] if total_schools_res else 0
 
-    # --------------------------------------------------------------------------
-    # 3. Risk & Intervention Counts
-    # --------------------------------------------------------------------------
     risk_sql = f"""
         SELECT
             COUNT(DISTINCT i.student_id) AS total_at_risk_students,
@@ -115,13 +134,7 @@ def get_executive_overview(
         FROM {risk_from_sql}
         WHERE {risk_where_sql};
     """
-    risk_res = fetch_one(risk_sql, tuple(risk_params))
-    at_risk_cnt = risk_res["total_at_risk_students"] if risk_res else 0
-    interventions_cnt = risk_res["total_interventions"] if risk_res else 0
 
-    # --------------------------------------------------------------------------
-    # 4. Executive Performance Core KPIs
-    # --------------------------------------------------------------------------
     kpi_sql = f"""
         SELECT
             COUNT(DISTINCT p.student_id) AS total_students,
@@ -138,28 +151,14 @@ def get_executive_overview(
         FROM {perf_from_sql}
         WHERE {perf_where_sql};
     """
-    kpis = fetch_one(kpi_sql, tuple(perf_params)) or {}
-    kpis["total_schools"] = total_schools_cnt
-    kpis["high_risk_student_count"] = at_risk_cnt
-    kpis["total_interventions_count"] = interventions_cnt
 
-    # Attendance Metric
     att_sql = f"""
         SELECT ROUND(AVG(st.attendance_pct), 2) AS average_attendance_pct
         FROM analytics.dim_student st
         JOIN analytics.dim_school s ON st.school_id = s.school_id
         WHERE {sch_where_sql};
     """
-    att_res = fetch_one(att_sql, tuple(sch_params))
-    kpis["average_attendance_pct"] = att_res["average_attendance_pct"] if att_res else None
 
-    # Ensure total_students and total_assessments default cleanly
-    kpis["total_students"] = kpis.get("total_students") or 0
-    kpis["total_assessments"] = kpis.get("total_assessments") or 0
-
-    # --------------------------------------------------------------------------
-    # 5. Longitudinal Monthly Assessment Trends
-    # --------------------------------------------------------------------------
     trend_sql = f"""
         SELECT
             TO_CHAR(p.performance_date, 'YYYY-MM') AS month,
@@ -172,11 +171,7 @@ def get_executive_overview(
         GROUP BY TO_CHAR(p.performance_date, 'YYYY-MM')
         ORDER BY month ASC;
     """
-    trends = fetch_all(trend_sql, tuple(perf_params), max_limit=50)
 
-    # --------------------------------------------------------------------------
-    # 6. Performance Band Distribution
-    # --------------------------------------------------------------------------
     band_sql = f"""
         SELECT
             p.performance_band,
@@ -187,12 +182,9 @@ def get_executive_overview(
         GROUP BY p.performance_band
         ORDER BY student_count DESC;
     """
-    band_distribution = fetch_all(band_sql, tuple(perf_params), max_limit=20)
 
-    # --------------------------------------------------------------------------
-    # 7. Top & Bottom Performing Schools
-    # --------------------------------------------------------------------------
-    top_schools_sql = f"""
+    # Single combined school aggregation query instead of running 2 separate full-table scans
+    schools_agg_sql = f"""
         SELECT
             s.school_id,
             s.school_name,
@@ -201,55 +193,78 @@ def get_executive_overview(
             COUNT(p.performance_id) AS assessments,
             ROUND(AVG(p.reading_score), 2) AS average_score,
             ROUND(100.0 * COUNT(*) FILTER (WHERE LOWER(p.benchmark_status) IN ('meets benchmark', 'exceeds benchmark', 'met', 'exceeded')) / NULLIF(COUNT(*), 0), 2) AS benchmark_percentage
-        FROM {perf_from_sql}
+        FROM analytics.fact_performance p
+        JOIN analytics.dim_school s ON p.school_id = s.school_id
         WHERE {perf_where_sql}
         GROUP BY s.school_id, s.school_name, s.district, s.state
-        HAVING COUNT(p.performance_id) >= 30
-        ORDER BY benchmark_percentage DESC, average_score DESC
-        LIMIT 5;
+        HAVING COUNT(p.performance_id) >= 30;
     """
-    top_schools = fetch_all(top_schools_sql, tuple(perf_params), max_limit=5)
 
-    bottom_schools_sql = f"""
-        SELECT
-            s.school_id,
-            s.school_name,
-            s.district,
-            s.state,
-            COUNT(p.performance_id) AS assessments,
-            ROUND(AVG(p.reading_score), 2) AS average_score,
-            ROUND(100.0 * COUNT(*) FILTER (WHERE LOWER(p.benchmark_status) IN ('meets benchmark', 'exceeds benchmark', 'met', 'exceeded')) / NULLIF(COUNT(*), 0), 2) AS benchmark_percentage
-        FROM {perf_from_sql}
-        WHERE {perf_where_sql}
-        GROUP BY s.school_id, s.school_name, s.district, s.state
-        HAVING COUNT(p.performance_id) >= 30
-        ORDER BY benchmark_percentage ASC, average_score ASC
-        LIMIT 5;
-    """
-    bottom_schools = fetch_all(bottom_schools_sql, tuple(perf_params), max_limit=5)
-
-    # --------------------------------------------------------------------------
-    # 8. Grade & Subject Performance Extremes
-    # --------------------------------------------------------------------------
     grade_perf_sql = """
         SELECT grade, average_reading_score, benchmark_percentage
         FROM analytics.v_grade_performance
         ORDER BY average_reading_score DESC;
     """
-    grade_rows = fetch_all(grade_perf_sql, max_limit=10)
-    strongest_grade = grade_rows[0] if grade_rows else None
-    weakest_grade = grade_rows[-1] if grade_rows else None
 
     subject_perf_sql = """
         SELECT subject, average_performance, benchmark_percentage
         FROM analytics.v_subject_performance
         ORDER BY average_performance DESC;
     """
-    subject_rows = fetch_all(subject_perf_sql, max_limit=10)
+
+    # --------------------------------------------------------------------------
+    # 3. Concurrent Query Execution via ThreadPoolExecutor
+    # --------------------------------------------------------------------------
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f_total_schools = executor.submit(fetch_one, total_schools_sql, tuple(sch_params))
+        f_risk = executor.submit(fetch_one, risk_sql, tuple(risk_params))
+        f_kpis = executor.submit(fetch_one, kpi_sql, tuple(perf_params))
+        f_att = executor.submit(fetch_one, att_sql, tuple(sch_params))
+        f_trends = executor.submit(fetch_all, trend_sql, tuple(perf_params), True, 50)
+        f_bands = executor.submit(fetch_all, band_sql, tuple(perf_params), True, 20)
+        f_schools = executor.submit(fetch_all, schools_agg_sql, tuple(perf_params), True, 1000)
+        f_grades = executor.submit(fetch_all, grade_perf_sql, (), True, 10)
+        f_subjects = executor.submit(fetch_all, subject_perf_sql, (), True, 10)
+
+        total_schools_res = f_total_schools.result()
+        risk_res = f_risk.result()
+        kpis = f_kpis.result() or {}
+        att_res = f_att.result()
+        trends = f_trends.result() or []
+        band_distribution = f_bands.result() or []
+        all_schools_perf = f_schools.result() or []
+        grade_rows = f_grades.result() or []
+        subject_rows = f_subjects.result() or []
+
+    # --------------------------------------------------------------------------
+    # 4. Synthesize KPIs and Rankings
+    # --------------------------------------------------------------------------
+    kpis["total_schools"] = total_schools_res["total_schools"] if total_schools_res else 0
+    kpis["high_risk_student_count"] = risk_res["total_at_risk_students"] if risk_res else 0
+    kpis["total_interventions_count"] = risk_res["total_interventions"] if risk_res else 0
+    kpis["average_attendance_pct"] = att_res["average_attendance_pct"] if att_res else None
+    kpis["total_students"] = kpis.get("total_students") or 0
+    kpis["total_assessments"] = kpis.get("total_assessments") or 0
+
+    # Sort aggregated schools in Python for Top 5 and Bottom 5 in < 0.1ms
+    top_schools = sorted(
+        all_schools_perf,
+        key=lambda x: (float(x.get("benchmark_percentage") or 0), float(x.get("average_score") or 0)),
+        reverse=True
+    )[:5]
+
+    bottom_schools = sorted(
+        all_schools_perf,
+        key=lambda x: (float(x.get("benchmark_percentage") or 0), float(x.get("average_score") or 0)),
+        reverse=False
+    )[:5]
+
+    strongest_grade = grade_rows[0] if grade_rows else None
+    weakest_grade = grade_rows[-1] if grade_rows else None
     strongest_subject = subject_rows[0] if subject_rows else None
     weakest_subject = subject_rows[-1] if subject_rows else None
 
-    return {
+    result = {
         "status": "success",
         "kpis": kpis,
         "trends": trends,
@@ -265,3 +280,6 @@ def get_executive_overview(
             "weakest_subject": weakest_subject
         }
     }
+
+    set_cached(cache_key, result)
+    return result

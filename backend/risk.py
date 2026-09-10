@@ -4,10 +4,12 @@ Student Learning Analytics & Decision Intelligence Platform
 
 Monitors student risk severity, Pareto root-cause distributions, priority triage queues,
 and early-warning indicators across institutions and grade cohorts.
+Optimized with in-memory TTL caching.
 """
 import logging
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all, fetch_one
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.risk")
 
@@ -24,6 +26,20 @@ def get_risk_overview(
     """
     Returns high-risk diagnostic summaries, Pareto root-cause charts, and prioritized triage queue.
     """
+    cache_key = make_cache_key(
+        "risk",
+        school_id=school_id,
+        grade=grade,
+        risk_level=risk_level,
+        priority=priority,
+        status=status,
+        limit=limit,
+        offset=offset
+    )
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
+
     where_clauses: List[str] = ["1=1"]
     params: List[Any] = []
 
@@ -74,7 +90,7 @@ def get_risk_overview(
         GROUP BY i.risk_reason
         ORDER BY case_count DESC;
     """
-    reasons = fetch_all(reasons_sql, tuple(params), max_limit=20)
+    reasons = fetch_all(reasons_sql, tuple(params), True, max_limit=20)
 
     # 3. Actionable Prioritized Triage Queue
     queue_sql = f"""
@@ -105,9 +121,9 @@ def get_risk_overview(
         LIMIT %s OFFSET %s;
     """
     queue_params = list(params) + [limit, offset]
-    triage_queue = fetch_all(queue_sql, tuple(queue_params), max_limit=limit + 10)
+    triage_queue = fetch_all(queue_sql, tuple(queue_params), True, max_limit=limit + 10)
 
-    return {
+    result = {
         "status": "success",
         "kpis": kpis,
         "risk_reasons_distribution": reasons,
@@ -116,3 +132,5 @@ def get_risk_overview(
         "offset": offset,
         "triage_queue": triage_queue
     }
+    set_cached(cache_key, result)
+    return result

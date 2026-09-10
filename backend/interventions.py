@@ -4,10 +4,12 @@ Student Learning Analytics & Decision Intelligence Platform
 
 Evaluates remediation outcomes, resolution efficiency, pre/post intervention score recovery,
 and recommended action effectiveness across cohorts and schools.
+Optimized with in-memory TTL caching and smart join elimination.
 """
 import logging
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all, fetch_one
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.interventions")
 
@@ -23,6 +25,19 @@ def get_interventions_overview(
     """
     Returns intervention effectiveness metrics, status breakdowns, and pre/post score recovery records.
     """
+    cache_key = make_cache_key(
+        "interventions",
+        school_id=school_id,
+        grade=grade,
+        status=status,
+        effectiveness_category=effectiveness_category,
+        limit=limit,
+        offset=offset
+    )
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
+
     where_clauses: List[str] = ["1=1"]
     params: List[Any] = []
 
@@ -40,6 +55,11 @@ def get_interventions_overview(
         params.append(effectiveness_category.strip())
 
     where_sql = " AND ".join(where_clauses)
+    from_sql = (
+        "analytics.v_intervention_effectiveness ie LEFT JOIN analytics.fact_intervention i ON ie.intervention_id = i.intervention_id"
+        if grade is not None
+        else "analytics.v_intervention_effectiveness ie"
+    )
 
     # 1. High-level Intervention ROI Summary
     kpi_sql = f"""
@@ -53,8 +73,7 @@ def get_interventions_overview(
             COUNT(*) FILTER (WHERE ie.effectiveness_category = 'Highly Effective') AS highly_effective_count,
             COUNT(*) FILTER (WHERE ie.effectiveness_category = 'Moderately Effective') AS moderately_effective_count,
             COUNT(*) FILTER (WHERE ie.effectiveness_category = 'Ineffective / Score Dropped') AS ineffective_count
-        FROM analytics.v_intervention_effectiveness ie
-        LEFT JOIN analytics.fact_intervention i ON ie.intervention_id = i.intervention_id
+        FROM {from_sql}
         WHERE {where_sql};
     """
     kpis = fetch_one(kpi_sql, tuple(params))
@@ -66,13 +85,12 @@ def get_interventions_overview(
             COUNT(*) AS count,
             ROUND(100.0 * COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 2) AS percentage,
             ROUND(AVG(ie.improvement), 2) AS avg_improvement
-        FROM analytics.v_intervention_effectiveness ie
-        LEFT JOIN analytics.fact_intervention i ON ie.intervention_id = i.intervention_id
+        FROM {from_sql}
         WHERE {where_sql}
         GROUP BY ie.effectiveness_category
         ORDER BY count DESC;
     """
-    effectiveness_dist = fetch_all(effectiveness_sql, tuple(params), max_limit=10)
+    effectiveness_dist = fetch_all(effectiveness_sql, tuple(params), True, max_limit=10)
 
     # 3. Recommended Actions Analysis
     actions_sql = f"""
@@ -81,13 +99,12 @@ def get_interventions_overview(
             COUNT(*) AS assigned_count,
             COUNT(*) FILTER (WHERE ie.intervention_status = 'Resolved') AS resolved_count,
             ROUND(AVG(ie.improvement), 2) AS avg_improvement
-        FROM analytics.v_intervention_effectiveness ie
-        LEFT JOIN analytics.fact_intervention i ON ie.intervention_id = i.intervention_id
+        FROM {from_sql}
         WHERE {where_sql}
         GROUP BY ie.recommended_action
         ORDER BY assigned_count DESC;
     """
-    actions = fetch_all(actions_sql, tuple(params), max_limit=20)
+    actions = fetch_all(actions_sql, tuple(params), True, max_limit=20)
 
     # 4. Detailed Pre/Post Intervention Evaluation Listing
     list_sql = f"""
@@ -108,16 +125,15 @@ def get_interventions_overview(
             ie.post_intervention_score,
             ie.improvement,
             ie.effectiveness_category
-        FROM analytics.v_intervention_effectiveness ie
-        LEFT JOIN analytics.fact_intervention i ON ie.intervention_id = i.intervention_id
+        FROM {from_sql}
         WHERE {where_sql}
         ORDER BY ie.identified_date DESC
         LIMIT %s OFFSET %s;
     """
     list_params = list(params) + [limit, offset]
-    interventions = fetch_all(list_sql, tuple(list_params), max_limit=limit + 10)
+    interventions = fetch_all(list_sql, tuple(list_params), True, max_limit=limit + 10)
 
-    return {
+    result = {
         "status": "success",
         "kpis": kpis,
         "effectiveness_distribution": effectiveness_dist,
@@ -127,3 +143,5 @@ def get_interventions_overview(
         "offset": offset,
         "interventions": interventions
     }
+    set_cached(cache_key, result)
+    return result

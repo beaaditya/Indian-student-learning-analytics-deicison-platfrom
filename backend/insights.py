@@ -5,12 +5,15 @@ Student Learning Analytics & Decision Intelligence Platform
 Extracts verified statistical facts directly from PostgreSQL fact tables and views,
 validates numerical grounding, and structures proactive prioritized insight cards
 with evidence citations, affected entities, and deep analytical navigation links.
+Optimized with concurrent fact extraction and in-memory TTL caching.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all, fetch_one
 from backend.gemini_service import generate_ai_analysis
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.insights")
 
@@ -22,7 +25,13 @@ def get_proactive_insights(
 ) -> Dict[str, Any]:
     """
     Returns prioritized list of grounded insight cards and macro summary KPIs.
+    Uses in-memory TTL caching for instant responses.
     """
+    cache_key = make_cache_key("insights", category=category, priority=priority, limit=limit)
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
+
     all_insights = detect_grounded_insights()
 
     # Filter by category if specified
@@ -36,30 +45,23 @@ def get_proactive_insights(
         all_insights = [i for i in all_insights if i["priority"].lower() == prio_clean]
 
     # Calculate summary counts
-    high_priority_count = sum(1 for i in all_insights if i["priority"] == "High" or i["priority"] == "Critical")
+    high_priority_count = sum(1 for i in all_insights if i["priority"] in ("High", "Critical"))
     categories_available = list(set(i["category"] for i in all_insights))
 
-    return {
+    result = {
         "status": "success",
         "total_insights": len(all_insights),
         "high_priority_count": high_priority_count,
         "categories": categories_available,
         "insights": all_insights[:limit]
     }
+    set_cached(cache_key, result)
+    return result
 
 
-def detect_grounded_insights() -> List[Dict[str, Any]]:
-    """
-    Executes targeted SQL analytics queries to extract empirical facts,
-    then generates structured, validated insight objects.
-    """
-    insights: List[Dict[str, Any]] = []
-    now_iso = datetime.now(timezone.utc).isoformat()
-
+def _fact_grade_fluency(now_iso: str) -> Optional[Dict[str, Any]]:
+    """Fact 1: Grade 6 Foundational Fluency Bottleneck."""
     try:
-        # ----------------------------------------------------------------------
-        # Fact 1: Grade 6 Foundational Fluency Bottleneck
-        # ----------------------------------------------------------------------
         g_sql = """
             SELECT
                 p.grade,
@@ -80,8 +82,7 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                 g6_fluency = float(g6["avg_fluency"] or 0)
                 g10_fluency = float(g10["avg_fluency"] or 0)
                 fluency_gap = round(g10_fluency - g6_fluency, 2)
-
-                insights.append({
+                return {
                     "id": "INS-GAP-001",
                     "category": "Learning Gap",
                     "title": "Grade 6 Foundational Fluency Bottleneck",
@@ -96,11 +97,15 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                     "target_route": "/grades",
                     "action_label": "View Grade Diagnostics",
                     "generated_at": now_iso
-                })
+                }
+    except Exception as e:
+        logger.warning(f"Error extracting Fact 1: {e}")
+    return None
 
-        # ----------------------------------------------------------------------
-        # Fact 2: Institutional Performance Disparity (Top vs Bottom Decile)
-        # ----------------------------------------------------------------------
+
+def _fact_school_disparity(now_iso: str) -> Optional[Dict[str, Any]]:
+    """Fact 2: Institutional Performance Disparity (Top vs Bottom Decile)."""
+    try:
         sch_sql = """
             SELECT
                 COUNT(*) AS total_schools,
@@ -121,8 +126,7 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
             bottom_score = float(sch_data["bottom_avg"])
             sch_gap = round(top_score - bottom_score, 2)
             total_sch = sch_data["total_schools"]
-
-            insights.append({
+            return {
                 "id": "INS-SCH-002",
                 "category": "School",
                 "title": "Substantial Institutional Attainment Disparity",
@@ -137,11 +141,15 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                 "target_route": "/schools",
                 "action_label": "View School Intelligence",
                 "generated_at": now_iso
-            })
+            }
+    except Exception as e:
+        logger.warning(f"Error extracting Fact 2: {e}")
+    return None
 
-        # ----------------------------------------------------------------------
-        # Fact 3: Mathematics Fluency Deficit
-        # ----------------------------------------------------------------------
+
+def _fact_math_fluency(now_iso: str) -> Optional[Dict[str, Any]]:
+    """Fact 3: Mathematics Fluency Deficit."""
+    try:
         sub_sql = """
             SELECT
                 p.subject,
@@ -161,8 +169,7 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                 math_fluency = float(math["avg_fluency"] or 0)
                 eng_fluency = float(eng["avg_fluency"] or 0)
                 diff = round(eng_fluency - math_fluency, 2)
-
-                insights.append({
+                return {
                     "id": "INS-SUB-003",
                     "category": "Subject",
                     "title": "Curricular Fluency Lag in Mathematics",
@@ -177,11 +184,15 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                     "target_route": "/grades",
                     "action_label": "View Subject Diagnostics",
                     "generated_at": now_iso
-                })
+                }
+    except Exception as e:
+        logger.warning(f"Error extracting Fact 3: {e}")
+    return None
 
-        # ----------------------------------------------------------------------
-        # Fact 4: Remediation ROI & Score Recovery Efficacy
-        # ----------------------------------------------------------------------
+
+def _fact_remediation_recovery(now_iso: str) -> Optional[Dict[str, Any]]:
+    """Fact 4: Remediation ROI & Score Recovery Efficacy."""
+    try:
         inv_sql = """
             SELECT
                 COUNT(*) AS total_cases,
@@ -197,8 +208,7 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
             res_rate = float(inv_data["resolution_rate"] or 0)
             total_cases = inv_data["total_cases"]
             eff_total = (inv_data.get("highly_effective_count") or 0) + (inv_data.get("moderately_effective_count") or 0)
-
-            insights.append({
+            return {
                 "id": "INS-INV-004",
                 "category": "Intervention",
                 "title": "Demonstrated Score Recovery Post-Remediation",
@@ -213,11 +223,15 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                 "target_route": "/risk",
                 "action_label": "View Remediation Outcomes",
                 "generated_at": now_iso
-            })
+            }
+    except Exception as e:
+        logger.warning(f"Error extracting Fact 4: {e}")
+    return None
 
-        # ----------------------------------------------------------------------
-        # Fact 5: Early Warning Triage Backlog & At-Risk Concentration
-        # ----------------------------------------------------------------------
+
+def _fact_risk_backlog(now_iso: str) -> Optional[Dict[str, Any]]:
+    """Fact 5: Early Warning Triage Backlog & At-Risk Concentration."""
+    try:
         risk_sql = """
             SELECT
                 COUNT(DISTINCT student_id) AS at_risk_students,
@@ -232,8 +246,7 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
             at_risk_stu = risk_data["at_risk_students"]
             active_backlog = (risk_data.get("open_cases") or 0) + (risk_data.get("in_prog_cases") or 0)
             avg_sev = float(risk_data["avg_severity"] or 50)
-
-            insights.append({
+            return {
                 "id": "INS-RISK-005",
                 "category": "Risk",
                 "title": "Elevated Early-Warning Triage Backlog",
@@ -248,11 +261,15 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                 "target_route": "/risk",
                 "action_label": "Inspect Triage Queue",
                 "generated_at": now_iso
-            })
+            }
+    except Exception as e:
+        logger.warning(f"Error extracting Fact 5: {e}")
+    return None
 
-        # ----------------------------------------------------------------------
-        # Fact 6: Longitudinal Assessment Growth Progression
-        # ----------------------------------------------------------------------
+
+def _fact_growth_trajectory(now_iso: str) -> Optional[Dict[str, Any]]:
+    """Fact 6: Longitudinal Assessment Growth Progression."""
+    try:
         exec_sql = """
             SELECT
                 COUNT(p.performance_id) AS total_assessments_recorded,
@@ -267,8 +284,7 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
             bench_pct = float(exec_data["benchmark_attainment_pct"] or 0)
             avg_perf = float(exec_data["average_performance_score"] or 0)
             total_evals = exec_data["total_assessments_recorded"]
-
-            insights.append({
+            return {
                 "id": "INS-GROWTH-006",
                 "category": "Growth",
                 "title": "Positive Multi-Year Literacy Attainment Trajectory",
@@ -283,9 +299,29 @@ def detect_grounded_insights() -> List[Dict[str, Any]]:
                 "target_route": "/overview",
                 "action_label": "View Executive Overview",
                 "generated_at": now_iso
-            })
-
+            }
     except Exception as e:
-        logger.error(f"Error generating proactive grounded insights: {e}", exc_info=True)
+        logger.warning(f"Error extracting Fact 6: {e}")
+    return None
 
-    return insights
+
+def detect_grounded_insights() -> List[Dict[str, Any]]:
+    """
+    Executes targeted SQL analytics queries concurrently to extract empirical facts,
+    then generates structured, validated insight objects.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    extractors = [
+        _fact_grade_fluency,
+        _fact_school_disparity,
+        _fact_math_fluency,
+        _fact_remediation_recovery,
+        _fact_risk_backlog,
+        _fact_growth_trajectory
+    ]
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(fn, now_iso) for fn in extractors]
+        raw_results = [f.result() for f in futures]
+
+    return [item for item in raw_results if item is not None]

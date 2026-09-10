@@ -60,6 +60,10 @@ class Settings:
     DB_POOL_MAX: int = int(os.getenv("DB_POOL_MAX", "20"))
     DB_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "15000"))
 
+    # In-Memory Response Caching
+    CACHE_ENABLED: bool = os.getenv("CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
+    CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS", "60"))
+
     # Gemini AI Integration Placeholders
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
@@ -91,6 +95,8 @@ class Settings:
             "POSTGRES_PASSWORD_SET": bool(self.POSTGRES_PASSWORD),
             "GEMINI_API_KEY_SET": bool(self.GEMINI_API_KEY),
             "GEMINI_MODEL": self.GEMINI_MODEL,
+            "CACHE_ENABLED": self.CACHE_ENABLED,
+            "CACHE_TTL_SECONDS": self.CACHE_TTL_SECONDS,
             "CORS_ORIGINS": self.CORS_ORIGINS,
         }
 

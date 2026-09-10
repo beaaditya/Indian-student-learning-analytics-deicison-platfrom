@@ -4,10 +4,12 @@ Student Learning Analytics & Decision Intelligence Platform
 
 Analyzes cohort learning outcomes, transition gaps, sub-skill diagnostics,
 and at-risk distributions across Grades 6 through 10.
+Optimized for high performance with smart join elimination and in-memory TTL caching.
 """
 import logging
 from typing import Any, Dict, List, Optional
 from backend.database import fetch_all
+from backend.cache import make_cache_key, get_cached, set_cached
 
 logger = logging.getLogger("backend.grades")
 
@@ -22,6 +24,19 @@ def get_grades_overview(
     Returns grade-level learning outcomes, sub-skill mastery diagnostics,
     and cohort transition step gaps across Grades 6 through 10.
     """
+    cache_key = make_cache_key(
+        "grades",
+        school_id=school_id,
+        state=state,
+        district=district,
+        management_type=management_type
+    )
+    cached_data = get_cached(cache_key)
+    if cached_data is not None:
+        return cached_data
+
+    has_school_filter = bool(state or district or management_type)
+
     where_clauses: List[str] = ["p.grade BETWEEN 6 AND 10"]
     params: List[Any] = []
 
@@ -39,6 +54,11 @@ def get_grades_overview(
         params.extend([management_type.strip(), f"%{management_type.strip()}%"])
 
     where_sql = " AND ".join(where_clauses)
+    from_sql = (
+        "analytics.fact_performance p JOIN analytics.dim_school s ON p.school_id = s.school_id"
+        if has_school_filter
+        else "analytics.fact_performance p"
+    )
 
     grade_sql = f"""
         SELECT
@@ -57,18 +77,17 @@ def get_grades_overview(
             ROUND(100.0 * COUNT(*) FILTER (WHERE LOWER(p.benchmark_status) IN ('meets benchmark', 'exceeds benchmark', 'met', 'exceeded')) / NULLIF(COUNT(*), 0), 2) AS benchmark_percentage,
             ROUND(100.0 * COUNT(*) FILTER (WHERE LOWER(p.benchmark_status) IN ('below benchmark', 'needs attention')) / NULLIF(COUNT(*), 0), 2) AS below_benchmark_percentage,
             ROUND(AVG(p.improvement_pct), 2) AS average_improvement_pct
-        FROM analytics.fact_performance p
-        JOIN analytics.dim_school s ON p.school_id = s.school_id
+        FROM {from_sql}
         WHERE {where_sql}
         GROUP BY p.grade
         ORDER BY p.grade ASC;
     """
-    grades_data = fetch_all(grade_sql, tuple(params), max_limit=10)
+    grades_data = fetch_all(grade_sql, tuple(params), True, max_limit=10)
 
     # Calculate Transition Step Gaps between consecutive grades
     transition_gaps: List[Dict[str, Any]] = []
     for i in range(1, len(grades_data)):
-        prev_g = grades_data[i-1]
+        prev_g = grades_data[i - 1]
         curr_g = grades_data[i]
         prev_score = prev_g.get("average_reading_score") or 0.0
         curr_score = curr_g.get("average_reading_score") or 0.0
@@ -86,8 +105,10 @@ def get_grades_overview(
             "status": "Growth" if score_delta >= 0 else "Decline"
         })
 
-    return {
+    result = {
         "status": "success",
         "grades": grades_data,
         "transition_gaps": transition_gaps
     }
+    set_cached(cache_key, result)
+    return result

@@ -25,7 +25,7 @@ _pool: Optional[ThreadedConnectionPool] = None
 
 
 def init_connection_pool() -> ThreadedConnectionPool:
-    """Initializes the PostgreSQL connection pool."""
+    """Initializes the PostgreSQL connection pool with connection-level options."""
     global _pool
     if _pool is None or _pool.closed:
         _pool = ThreadedConnectionPool(
@@ -36,8 +36,9 @@ def init_connection_pool() -> ThreadedConnectionPool:
             dbname=settings.POSTGRES_DB,
             user=settings.POSTGRES_USER,
             password=settings.POSTGRES_PASSWORD,
+            options=f"-c statement_timeout={settings.DB_STATEMENT_TIMEOUT_MS}"
         )
-        logger.info("PostgreSQL connection pool initialized successfully.")
+        logger.info("PostgreSQL connection pool initialized successfully with statement_timeout option.")
     return _pool
 
 
@@ -71,8 +72,6 @@ def get_db_cursor(read_only: bool = True):
         conn.set_session(readonly=True, autocommit=True)
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            timeout_ms = settings.DB_STATEMENT_TIMEOUT_MS
-            cur.execute(f"SET statement_timeout = '{timeout_ms}';")
             yield cur
     finally:
         pool.putconn(conn)
